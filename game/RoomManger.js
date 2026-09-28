@@ -9,9 +9,11 @@ class RoomManager {
 
     createRoom() {
 
-        const id = String(this.nextRoom++);
+        const id =
+            String(this.nextRoom++);
 
-        const room = new GameRoom(id);
+        const room =
+            new GameRoom(id);
 
         this.rooms[id] = room;
 
@@ -28,15 +30,22 @@ class RoomManager {
 
     findAvailableRoom() {
 
-        const keys = Object.keys(this.rooms);
+        const ids =
+            Object.keys(this.rooms);
 
-        for (var i = 0; i < keys.length; i++) {
+        for (
+            let i = 0;
+            i < ids.length;
+            i++
+        ) {
 
-            const room = this.rooms[keys[i]];
+            const room =
+                this.rooms[ids[i]];
 
             if (
                 room.phase === "WAITING" &&
-                Object.keys(room.players).length < room.maxPlayers
+                Object.keys(room.players).length <
+                room.maxPlayers
             ) {
                 return room;
             }
