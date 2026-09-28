@@ -4,15 +4,20 @@ const crypto = require("crypto");
 const RoomManager = require("./game/RoomManager");
 
 const PORT = process.env.PORT || 10000;
-
 const rooms = new RoomManager();
 const clients = {};
+const serverStartedAt = Date.now();
 
 const server = http.createServer(function(req, res) {
+    const players = Object.keys(clients).length;
+    const uptime = Math.floor(
+        (Date.now() - serverStartedAt) / 1000
+    );
 
     res.writeHead(200, {
         "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*"
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "no-cache"
     });
 
     res.end(JSON.stringify({
@@ -20,7 +25,9 @@ const server = http.createServer(function(req, res) {
         version: "1.0.0",
         status: "online",
         websocket: true,
-        rooms: Object.keys(rooms.rooms).length
+        players: players,
+        rooms: Object.keys(rooms.rooms).length,
+        uptime: uptime
     }));
 });
 
@@ -29,64 +36,30 @@ const wss = new WebSocket.Server({
 });
 
 function send(ws, type, data) {
+    if (!ws) return;
+    if (ws.readyState !== WebSocket.OPEN) return;
 
-    if (!ws) {
-        return;
-    }
-
-    if (ws.readyState !== WebSocket.OPEN) {
-        return;
-    }
-
-    try {
-
-        ws.send(JSON.stringify({
-            type: type,
-            data: data || {}
-        }));
-
-    } catch (error) {
-
-        console.log(
-            "Send error:",
-            error.message
-        );
-    }
+    ws.send(JSON.stringify({
+        type: type,
+        data: data || {}
+    }));
 }
 
 function broadcast(room, type, data) {
+    if (!room) return;
 
-    if (!room) {
-        return;
-    }
+    const ids = Object.keys(room.players);
 
-    const ids =
-        Object.keys(room.players);
-
-    for (
-        let i = 0;
-        i < ids.length;
-        i++
-    ) {
-
-        const id = ids[i];
-
-        const client =
-            clients[id];
+    for (let i = 0; i < ids.length; i++) {
+        const client = clients[ids[i]];
 
         if (client) {
-
-            send(
-                client,
-                type,
-                data
-            );
+            send(client, type, data);
         }
     }
 }
 
 function roomState(room) {
-
     return {
         roomId: room.id,
         phase: room.phase,
@@ -97,22 +70,16 @@ function roomState(room) {
 }
 
 function removeClientFromRoom(ws) {
+    if (!ws.roomId) return;
 
-    if (!ws.roomId) {
-        return;
-    }
-
-    const room =
-        rooms.getRoom(ws.roomId);
+    const room = rooms.getRoom(ws.roomId);
 
     if (!room) {
         ws.roomId = null;
         return;
     }
 
-    room.removePlayer(
-        ws.playerId
-    );
+    room.removePlayer(ws.playerId);
 
     broadcast(
         room,
@@ -120,18 +87,8 @@ function removeClientFromRoom(ws) {
         roomState(room)
     );
 
-    if (
-        Object.keys(room.players).length === 0
-    ) {
-
-        rooms.removeRoom(
-            room.id
-        );
-
-        console.log(
-            "Room removed:",
-            room.id
-        );
+    if (Object.keys(room.players).length === 0) {
+        rooms.removeRoom(room.id);
     }
 
     ws.roomId = null;
@@ -139,121 +96,56 @@ function removeClientFromRoom(ws) {
 
 wss.on("connection", function(ws) {
 
-    const playerId =
-        crypto.randomUUID();
+    const playerId = crypto.randomUUID();
 
-    ws.playerId =
-        playerId;
+    ws.playerId = playerId;
+    ws.roomId = null;
 
-    ws.roomId =
-        null;
+    clients[playerId] = ws;
 
-    clients[playerId] =
-        ws;
-
-    console.log(
-        "CONNECTED:",
-        playerId
-    );
-
-    send(
-        ws,
-        "CONNECTED",
-        {
-            playerId: playerId
-        }
-    );
+    send(ws, "CONNECTED", {
+        playerId: playerId
+    });
 
     ws.on("message", function(message) {
 
         let packet;
 
         try {
-
-            packet =
-                JSON.parse(
-                    message.toString()
-                );
-
-        } catch (error) {
-
-            send(
-                ws,
-                "ERROR",
-                {
-                    message:
-                        "Invalid JSON"
-                }
+            packet = JSON.parse(
+                message.toString()
             );
-
+        } catch (e) {
+            send(ws, "ERROR", {
+                message: "Invalid JSON"
+            });
             return;
         }
 
-        if (!packet) {
-            return;
-        }
-
-        const type =
-            packet.type;
-
-        const data =
-            packet.data || {};
+        const type = packet.type;
+        const data = packet.data || {};
 
         if (!type) {
-
-            send(
-                ws,
-                "ERROR",
-                {
-                    message:
-                        "Missing packet type"
-                }
-            );
-
+            send(ws, "ERROR", {
+                message: "Missing packet type"
+            });
             return;
         }
 
-        /*
-         * CREATE ROOM
-         */
-
-        if (
-            type === "CREATE_ROOM"
-        ) {
+        if (type === "CREATE_ROOM") {
 
             removeClientFromRoom(ws);
 
-            const room =
-                rooms.createRoom();
+            const room = rooms.createRoom();
 
-            const player =
-                room.addPlayer(
-                    playerId,
-                    data.name ||
-                        "Player"
-                );
-
-            if (!player) {
-
-                send(
-                    ws,
-                    "ERROR",
-                    {
-                        message:
-                            "Could not create room"
-                    }
-                );
-
-                return;
-            }
-
-            ws.roomId =
-                room.id;
-
-            console.log(
-                "ROOM CREATED:",
-                room.id
+            const player = room.addPlayer(
+                playerId,
+                data.name || "Player"
             );
+
+            if (!player) return;
+
+            ws.roomId = room.id;
 
             send(
                 ws,
@@ -270,49 +162,26 @@ wss.on("connection", function(ws) {
             return;
         }
 
-        /*
-         * JOIN RANDOM
-         */
-
-        if (
-            type === "JOIN_RANDOM"
-        ) {
+        if (type === "JOIN_RANDOM") {
 
             removeClientFromRoom(ws);
 
             const room =
                 rooms.findAvailableRoom();
 
-            const player =
-                room.addPlayer(
-                    playerId,
-                    data.name ||
-                        "Player"
-                );
+            const player = room.addPlayer(
+                playerId,
+                data.name || "Player"
+            );
 
             if (!player) {
-
-                send(
-                    ws,
-                    "ERROR",
-                    {
-                        message:
-                            "Room is full"
-                    }
-                );
-
+                send(ws, "ERROR", {
+                    message: "Room is full"
+                });
                 return;
             }
 
-            ws.roomId =
-                room.id;
-
-            console.log(
-                "PLAYER",
-                player.name,
-                "JOINED ROOM",
-                room.id
-            );
+            ws.roomId = room.id;
 
             send(
                 ws,
@@ -329,87 +198,43 @@ wss.on("connection", function(ws) {
             return;
         }
 
-        /*
-         * JOIN ROOM
-         */
-
-        if (
-            type === "JOIN_ROOM"
-        ) {
+        if (type === "JOIN_ROOM") {
 
             const roomId =
-                String(
-                    data.roomId || ""
-                );
+                String(data.roomId || "");
 
             const room =
-                rooms.getRoom(
-                    roomId
-                );
+                rooms.getRoom(roomId);
 
             if (!room) {
-
-                send(
-                    ws,
-                    "ERROR",
-                    {
-                        message:
-                            "Room not found"
-                    }
-                );
-
+                send(ws, "ERROR", {
+                    message: "Room not found"
+                });
                 return;
             }
 
-            if (
-                room.phase !==
-                "WAITING"
-            ) {
-
-                send(
-                    ws,
-                    "ERROR",
-                    {
-                        message:
-                            "Game already started"
-                    }
-                );
-
+            if (room.phase !== "WAITING") {
+                send(ws, "ERROR", {
+                    message: "Game already started"
+                });
                 return;
             }
 
             removeClientFromRoom(ws);
 
-            const player =
-                room.addPlayer(
-                    playerId,
-                    data.name ||
-                        "Player"
-                );
+            const player = room.addPlayer(
+                playerId,
+                data.name || "Player"
+            );
 
             if (!player) {
-
-                send(
-                    ws,
-                    "ERROR",
-                    {
-                        message:
-                            "Room is full"
-                    }
-                );
-
+                send(ws, "ERROR", {
+                    message: "Room is full"
+                });
                 return;
             }
 
-            ws.roomId =
-                room.id;
-
-            console.log(
-                "PLAYER",
-                player.name,
-                "JOINED ROOM",
-                room.id
-            );
+            ws.roomId = room.id;
 
             send(
                 ws,
@@ -426,75 +251,31 @@ wss.on("connection", function(ws) {
             return;
         }
 
-        /*
-         * Everything below requires room
-         */
-
         if (!ws.roomId) {
-
-            send(
-                ws,
-                "ERROR",
-                {
-                    message:
-                        "You are not inside a room"
-                }
-            );
-
+            send(ws, "ERROR", {
+                message: "You are not inside a room"
+            });
             return;
         }
 
         const room =
-            rooms.getRoom(
-                ws.roomId
-            );
+            rooms.getRoom(ws.roomId);
 
         if (!room) {
-
-            send(
-                ws,
-                "ERROR",
-                {
-                    message:
-                        "Room no longer exists"
-                }
-            );
-
-            ws.roomId =
-                null;
-
+            send(ws, "ERROR", {
+                message: "Room no longer exists"
+            });
             return;
         }
 
         const player =
-            room.getPlayer(
-                playerId
-            );
+            room.getPlayer(playerId);
 
-        if (!player) {
+        if (!player) return;
 
-            send(
-                ws,
-                "ERROR",
-                {
-                    message:
-                        "Player not found"
-                }
-            );
+        if (type === "READY") {
 
-            return;
-        }
-
-        /*
-         * READY
-         */
-
-        if (
-            type === "READY"
-        ) {
-
-            player.ready =
-                true;
+            player.ready = true;
 
             broadcast(
                 room,
@@ -505,16 +286,9 @@ wss.on("connection", function(ws) {
             return;
         }
 
-        /*
-         * UNREADY
-         */
+        if (type === "UNREADY") {
 
-        if (
-            type === "UNREADY"
-        ) {
-
-            player.ready =
-                false;
+            player.ready = false;
 
             broadcast(
                 room,
@@ -525,73 +299,30 @@ wss.on("connection", function(ws) {
             return;
         }
 
-        /*
-         * START GAME
-         */
+        if (type === "START_GAME") {
 
-        if (
-            type === "START_GAME"
-        ) {
+            if (room.phase !== "WAITING") {
+                send(ws, "ERROR", {
+                    message: "Game already started"
+                });
+                return;
+            }
 
             if (
-                room.phase !==
-                "WAITING"
+                Object.keys(room.players).length < 2
             ) {
-
-                send(
-                    ws,
-                    "ERROR",
-                    {
-                        message:
-                            "Game already started"
-                    }
-                );
-
+                send(ws, "ERROR", {
+                    message: "Need at least 2 players"
+                });
                 return;
             }
 
-            const players =
-                Object.values(
-                    room.players
-                );
-
-            if (
-                players.length < 2
-            ) {
-
-                send(
-                    ws,
-                    "ERROR",
-                    {
-                        message:
-                            "Need at least 2 players"
-                    }
-                );
-
+            if (!room.startGame()) {
+                send(ws, "ERROR", {
+                    message: "Could not start game"
+                });
                 return;
             }
-
-            const started =
-                room.startGame();
-
-            if (!started) {
-
-                send(
-                    ws,
-                    "ERROR",
-                    {
-                        message:
-                            "Could not start game"
-                    }
-                );
-
-                return;
-            }
-
-            console.log(
-                "GAME STARTED:",
-                room.id
-            );
 
             broadcast(
                 room,
@@ -602,33 +333,14 @@ wss.on("connection", function(ws) {
             return;
         }
 
-        /*
-         * PLAYER MOVE
-         */
+        if (type === "PLAYER_MOVE") {
 
-        if (
-            type === "PLAYER_MOVE"
-        ) {
+            if (room.phase !== "PLAYING") return;
+            if (!player.alive) return;
 
-            if (
-                room.phase !==
-                "PLAYING"
-            ) {
-                return;
-            }
-
-            if (!player.alive) {
-                return;
-            }
-
-            let x =
-                Number(data.x);
-
-            let y =
-                Number(data.y);
-
-            let rotation =
-                Number(data.rotation);
+            let x = Number(data.x);
+            let y = Number(data.y);
+            let rotation = Number(data.rotation);
 
             if (!Number.isFinite(x)) {
                 x = player.x;
@@ -639,28 +351,17 @@ wss.on("connection", function(ws) {
             }
 
             if (!Number.isFinite(rotation)) {
-                rotation =
-                    player.rotation;
+                rotation = player.rotation;
             }
-
-            /*
-             * Limite simples do mapa
-             */
 
             x = Math.max(
                 -2000,
-                Math.min(
-                    2000,
-                    x
-                )
+                Math.min(2000, x)
             );
 
             y = Math.max(
                 -2000,
-                Math.min(
-                    2000,
-                    y
-                )
+                Math.min(2000, y)
             );
 
             player.move(
@@ -673,65 +374,33 @@ wss.on("connection", function(ws) {
                 room,
                 "PLAYER_UPDATE",
                 {
-                    player:
-                        player.toJSON()
+                    player: player.toJSON()
                 }
             );
 
             return;
         }
 
-        /*
-         * OBJECTIVE
-         */
+        if (type === "OBJECTIVE") {
 
-        if (
-            type === "OBJECTIVE"
-        ) {
-
-            if (
-                room.phase !==
-                "PLAYING"
-            ) {
-                return;
-            }
-
-            if (
-                player.role !==
-                "SURVIVOR"
-            ) {
-                return;
-            }
-
-            if (!player.alive) {
-                return;
-            }
+            if (room.phase !== "PLAYING") return;
+            if (player.role !== "SURVIVOR") return;
+            if (!player.alive) return;
 
             const objectiveId =
-                Number(
-                    data.objectiveId
-                );
+                Number(data.objectiveId);
 
             const amount =
-                Number(
-                    data.amount || 10
-                );
+                Number(data.amount || 10);
 
-            if (
-                !Number.isFinite(
-                    objectiveId
-                )
-            ) {
+            if (!Number.isFinite(objectiveId)) {
                 return;
             }
 
             const safeAmount =
                 Math.max(
                     1,
-                    Math.min(
-                        20,
-                        amount
-                    )
+                    Math.min(20, amount)
                 );
 
             const objective =
@@ -740,114 +409,56 @@ wss.on("connection", function(ws) {
                     safeAmount
                 );
 
-            if (!objective) {
-                return;
-            }
+            if (!objective) return;
 
             broadcast(
                 room,
                 "OBJECTIVE_UPDATE",
                 {
-                    objective:
-                        objective
+                    objective: objective
                 }
             );
 
             return;
         }
 
-        /*
-         * BEAR HIT
-         */
+        if (type === "HIT") {
 
-        if (
-            type === "HIT"
-        ) {
-
-            if (
-                room.phase !==
-                "PLAYING"
-            ) {
-                return;
-            }
-
-            if (
-                player.role !==
-                "BEAR"
-            ) {
-                return;
-            }
-
-            if (!player.alive) {
-                return;
-            }
+            if (room.phase !== "PLAYING") return;
+            if (player.role !== "BEAR") return;
+            if (!player.alive) return;
 
             const targetId =
-                String(
-                    data.targetId || ""
-                );
+                String(data.targetId || "");
 
             const target =
-                room.getPlayer(
-                    targetId
-                );
+                room.getPlayer(targetId);
 
-            if (!target) {
-                return;
-            }
-
-            if (
-                target.role !==
-                "SURVIVOR"
-            ) {
-                return;
-            }
-
-            if (!target.alive) {
-                return;
-            }
+            if (!target) return;
+            if (target.role !== "SURVIVOR") return;
+            if (!target.alive) return;
 
             target.health -= 25;
 
-            if (
-                target.health <= 0
-            ) {
-
-                target.health =
-                    0;
-
-                target.alive =
-                    false;
+            if (target.health <= 0) {
+                target.health = 0;
+                target.alive = false;
             }
 
             broadcast(
                 room,
                 "DAMAGE",
                 {
-                    targetId:
-                        target.id,
-
-                    health:
-                        target.health,
-
-                    alive:
-                        target.alive
+                    targetId: target.id,
+                    health: target.health,
+                    alive: target.alive
                 }
             );
 
-            /*
-             * Verifica fim da partida
-             */
-
             const survivors =
-                Object.values(
-                    room.players
-                ).filter(
+                Object.values(room.players).filter(
                     function(p) {
-                        return (
-                            p.role ===
-                            "SURVIVOR"
-                        );
+                        return p.role === "SURVIVOR";
                     }
                 );
 
@@ -863,16 +474,13 @@ wss.on("connection", function(ws) {
                 aliveSurvivors.length === 0
             ) {
 
-                room.phase =
-                    "FINISHED";
+                room.phase = "FINISHED";
 
                 broadcast(
                     room,
                     "GAME_END",
                     {
-                        winner:
-                            "BEAR",
-
+                        winner: "BEAR",
                         reason:
                             "ALL_SURVIVORS_ELIMINATED"
                     }
@@ -882,13 +490,7 @@ wss.on("connection", function(ws) {
             return;
         }
 
-        /*
-         * LEAVE
-         */
-
-        if (
-            type === "LEAVE"
-        ) {
+        if (type === "LEAVE") {
 
             removeClientFromRoom(ws);
 
@@ -901,55 +503,32 @@ wss.on("connection", function(ws) {
             return;
         }
 
-        /*
-         * PING
-         */
-
-        if (
-            type === "PING"
-        ) {
+        if (type === "PING") {
 
             send(
                 ws,
                 "PONG",
                 {
-                    time:
-                        Date.now()
+                    time: Date.now()
                 }
             );
 
             return;
         }
 
-        send(
-            ws,
-            "ERROR",
-            {
-                message:
-                    "Unknown packet: " +
-                    type
-            }
-        );
+        send(ws, "ERROR", {
+            message: "Unknown packet: " + type
+        });
     });
 
     ws.on("close", function() {
 
-        console.log(
-            "DISCONNECTED:",
-            playerId
-        );
+        removeClientFromRoom(ws);
 
-        removeClientFromRoom(
-            ws
-        );
-
-        delete clients[
-            playerId
-        ];
+        delete clients[playerId];
     });
 
     ws.on("error", function(error) {
-
         console.log(
             "WEBSOCKET ERROR:",
             error.message
@@ -957,42 +536,13 @@ wss.on("connection", function(ws) {
     });
 });
 
-server.on("error", function(error) {
-
-    console.error(
-        "SERVER ERROR:",
-        error
-    );
-});
-
 server.listen(
     PORT,
     "0.0.0.0",
     function() {
-
         console.log(
-            "================================"
-        );
-
-        console.log(
-            "      BEARSTAR SERVER"
-        );
-
-        console.log(
-            "================================"
-        );
-
-        console.log(
-            "Port:",
+            "BearStar Server running on port " +
             PORT
-        );
-
-        console.log(
-            "HTTP: ONLINE"
-        );
-
-        console.log(
-            "WebSocket: ONLINE"
         );
     }
 );
