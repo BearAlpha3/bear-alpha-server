@@ -6,7 +6,9 @@ class GameRoom {
         this.id = id;
         this.players = {};
         this.phase = "WAITING";
+
         this.maxPlayers = 8;
+
         this.objectives = [
             {
                 id: 1,
@@ -28,11 +30,15 @@ class GameRoom {
 
     addPlayer(id, name) {
 
-        if (Object.keys(this.players).length >= this.maxPlayers) {
+        if (
+            Object.keys(this.players).length >=
+            this.maxPlayers
+        ) {
             return null;
         }
 
-        const player = new Player(id, name);
+        const player =
+            new Player(id, name);
 
         this.players[id] = player;
 
@@ -48,14 +54,18 @@ class GameRoom {
     }
 
     getPlayers() {
-        return Object.values(this.players).map(function(player) {
+
+        return Object.values(
+            this.players
+        ).map(function(player) {
             return player.toJSON();
         });
     }
 
     startGame() {
 
-        const list = Object.values(this.players);
+        const list =
+            Object.values(this.players);
 
         if (list.length < 2) {
             return false;
@@ -63,18 +73,31 @@ class GameRoom {
 
         this.phase = "PLAYING";
 
-        var bearIndex = Math.floor(Math.random() * list.length);
+        const bearIndex =
+            Math.floor(
+                Math.random() * list.length
+            );
 
-        for (var i = 0; i < list.length; i++) {
+        for (
+            let i = 0;
+            i < list.length;
+            i++
+        ) {
 
             if (i === bearIndex) {
+
                 list[i].role = "BEAR";
-                list[i].x = 0;
-                list[i].y = 0;
+                list[i].x = 500;
+                list[i].y = 500;
+
             } else {
+
                 list[i].role = "SURVIVOR";
-                list[i].x = (i * 100) + 100;
-                list[i].y = 100;
+
+                list[i].x =
+                    200 + (i * 100);
+
+                list[i].y = 300;
             }
         }
 
@@ -83,15 +106,29 @@ class GameRoom {
 
     objective(id, amount) {
 
-        for (var i = 0; i < this.objectives.length; i++) {
+        for (
+            let i = 0;
+            i < this.objectives.length;
+            i++
+        ) {
 
-            if (this.objectives[i].id === id) {
+            if (
+                this.objectives[i].id === id
+            ) {
 
-                this.objectives[i].progress += amount;
+                this.objectives[i].progress +=
+                    amount;
 
-                if (this.objectives[i].progress >= 100) {
-                    this.objectives[i].progress = 100;
-                    this.objectives[i].complete = true;
+                if (
+                    this.objectives[i].progress >=
+                    100
+                ) {
+
+                    this.objectives[i].progress =
+                        100;
+
+                    this.objectives[i].complete =
+                        true;
                 }
 
                 return this.objectives[i];
@@ -99,16 +136,6 @@ class GameRoom {
         }
 
         return null;
-    }
-
-    toJSON() {
-
-        return {
-            id: this.id,
-            phase: this.phase,
-            players: this.getPlayers(),
-            objectives: this.objectives
-        };
     }
 }
 
