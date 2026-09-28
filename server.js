@@ -4,7 +4,9 @@ const WebSocket = require("ws");
 const PORT = process.env.PORT || 10000;
 
 const server = http.createServer((req, res) => {
+
     if (req.url === "/" || req.url === "/health") {
+
         res.writeHead(200, {
             "Content-Type": "application/json"
         });
@@ -50,8 +52,11 @@ const ATTACK_COOLDOWN = 650;
 const ROUND_COUNTDOWN = 5;
 const ROUND_TIME = 180;
 
-const TICK_RATE = 20;
+const TICK_RATE = 30;
 const TICK_MS = 1000 / TICK_RATE;
+
+const SNAPSHOT_RATE = 20;
+const SNAPSHOT_MS = 1000 / SNAPSHOT_RATE;
 
 /* =========================
    DADOS
@@ -68,24 +73,38 @@ let nextRoomNumber = 1;
 ========================= */
 
 function randomId() {
+
     return (
         Date.now().toString(36) +
-        Math.random().toString(36).substring(2, 8)
+        Math.random()
+            .toString(36)
+            .substring(2, 10)
     );
 }
 
 function clamp(value, min, max) {
-    return Math.max(min, Math.min(max, value));
+
+    return Math.max(
+        min,
+        Math.min(max, value)
+    );
 }
 
 function isFiniteNumber(value) {
+
     return (
         typeof value === "number" &&
         Number.isFinite(value)
     );
 }
 
-function distance(x1, y1, x2, y2) {
+function distance(
+    x1,
+    y1,
+    x2,
+    y2
+) {
+
     const dx = x2 - x1;
     const dy = y2 - y1;
 
@@ -96,47 +115,74 @@ function distance(x1, y1, x2, y2) {
 }
 
 function send(ws, data) {
+
     if (
-        ws &&
-        ws.readyState === WebSocket.OPEN
+        !ws ||
+        ws.readyState !== WebSocket.OPEN
     ) {
-        try {
-            ws.send(JSON.stringify(data));
-        } catch (e) {
-            console.log("Erro ao enviar:", e.message);
-        }
+        return;
+    }
+
+    try {
+
+        ws.send(
+            JSON.stringify(data)
+        );
+
+    } catch (e) {
+
+        console.log(
+            "Erro ao enviar:",
+            e.message
+        );
     }
 }
 
 function broadcast(room, data) {
+
     if (!room)
         return;
 
-    for (const player of room.players) {
-        send(player.ws, data);
+    for (
+        const player of room.players
+    ) {
+
+        send(
+            player.ws,
+            data
+        );
     }
 }
 
 /* =========================
-   SALA
+   SALAS
 ========================= */
 
 function createRoom() {
 
     const room = {
-        id: "room_" + nextRoomNumber++,
 
-        players: new Set(),
+        id:
+            "room_" +
+            nextRoomNumber++,
 
-        phase: "WAITING",
+        players:
+            new Set(),
 
-        countdown: 0,
+        phase:
+            "WAITING",
 
-        roundStartedAt: 0,
+        countdown:
+            0,
 
-        roundEndsAt: 0,
+        roundStartedAt:
+            0,
 
-        countdownTimer: null
+        roundEndsAt:
+            0,
+
+        countdownTimer:
+            null
     };
 
     rooms.set(
@@ -149,13 +195,16 @@ function createRoom() {
 
 function findAvailableRoom() {
 
-    for (const room of rooms.values()) {
+    for (
+        const room of rooms.values()
+    ) {
 
         if (
             room.phase === "WAITING" &&
             room.players.size <
             MAX_PLAYERS_PER_ROOM
         ) {
+
             return room;
         }
     }
@@ -172,37 +221,59 @@ function getSpawnPosition(role) {
     if (role === "BEAR") {
 
         return {
-            x: MAP_WIDTH / 2,
-            y: MAP_HEIGHT / 2
+
+            x:
+                MAP_WIDTH / 2,
+
+            y:
+                MAP_HEIGHT / 2
         };
     }
 
     const margin = 150;
 
     const positions = [
+
         {
             x: margin,
             y: margin
         },
+
         {
-            x: MAP_WIDTH - margin,
+            x:
+                MAP_WIDTH - margin,
+
             y: margin
         },
+
         {
             x: margin,
-            y: MAP_HEIGHT - margin
+
+            y:
+                MAP_HEIGHT - margin
         },
+
         {
-            x: MAP_WIDTH - margin,
-            y: MAP_HEIGHT - margin
+            x:
+                MAP_WIDTH - margin,
+
+            y:
+                MAP_HEIGHT - margin
         },
+
         {
-            x: MAP_WIDTH / 2,
+            x:
+                MAP_WIDTH / 2,
+
             y: margin
         },
+
         {
-            x: MAP_WIDTH / 2,
-            y: MAP_HEIGHT - margin
+            x:
+                MAP_WIDTH / 2,
+
+            y:
+                MAP_HEIGHT - margin
         }
     ];
 
@@ -220,7 +291,11 @@ function getSpawnPosition(role) {
 
 function createPlayer(ws) {
 
-    const id = randomId();
+    const id =
+        randomId();
+
+    const number =
+        nextPlayerNumber++;
 
     const player = {
 
@@ -228,33 +303,53 @@ function createPlayer(ws) {
 
         ws: ws,
 
-        number: nextPlayerNumber++,
+        number: number,
 
         name:
             "Guest" +
-            nextPlayerNumber,
+            number,
 
-        role: "SURVIVOR",
+        role:
+            "SURVIVOR",
 
-        x: 1000,
+        x:
+            MAP_WIDTH / 2,
 
-        y: 600,
+        y:
+            MAP_HEIGHT / 2,
 
-        hp: SURVIVOR_HP,
+        hp:
+            SURVIVOR_HP,
 
-        maxHp: SURVIVOR_HP,
+        maxHp:
+            SURVIVOR_HP,
 
-        dead: false,
+        dead:
+            false,
 
-        kills: 0,
+        kills:
+            0,
 
-        moveX: 0,
+        /*
+         * DIREÇÃO DO JOYSTICK
+         */
+        moveX:
+            0,
 
-        moveY: 0,
+        moveY:
+            0,
 
-        lastAttack: 0,
+        /*
+         * Controle de atividade
+         */
+        lastInput:
+            Date.now(),
 
-        room: null
+        lastAttack:
+            0,
+
+        room:
+            null
     };
 
     players.set(
@@ -266,29 +361,39 @@ function createPlayer(ws) {
 }
 
 /* =========================
-   PLAYER DATA
+   PLAYER PÚBLICO
 ========================= */
 
 function publicPlayer(player) {
 
     return {
-        id: player.id,
 
-        name: player.name,
+        id:
+            player.id,
 
-        role: player.role,
+        name:
+            player.name,
 
-        x: player.x,
+        role:
+            player.role,
 
-        y: player.y,
+        x:
+            player.x,
 
-        hp: player.hp,
+        y:
+            player.y,
 
-        maxHp: player.maxHp,
+        hp:
+            player.hp,
 
-        dead: player.dead,
+        maxHp:
+            player.maxHp,
 
-        kills: player.kills
+        dead:
+            player.dead,
+
+        kills:
+            player.kills
     };
 }
 
@@ -296,7 +401,10 @@ function roomPlayers(room) {
 
     const result = [];
 
-    for (const player of room.players) {
+    for (
+        const player of room.players
+    ) {
+
         result.push(
             publicPlayer(player)
         );
@@ -311,7 +419,8 @@ function roomPlayers(room) {
 
 function sendSnapshot(player) {
 
-    const room = player.room;
+    const room =
+        player.room;
 
     if (!room)
         return;
@@ -319,15 +428,21 @@ function sendSnapshot(player) {
     send(
         player.ws,
         {
-            type: "snapshot",
 
-            playerId: player.id,
+            type:
+                "snapshot",
 
-            roomId: room.id,
+            playerId:
+                player.id,
 
-            phase: room.phase,
+            roomId:
+                room.id,
 
-            countdown: room.countdown,
+            phase:
+                room.phase,
+
+            countdown:
+                room.countdown,
 
             timeLeft:
                 getTimeLeft(room),
@@ -345,7 +460,8 @@ function sendSnapshot(player) {
 function getTimeLeft(room) {
 
     if (
-        room.phase !== "PLAYING"
+        room.phase !==
+        "PLAYING"
     ) {
         return 0;
     }
@@ -368,12 +484,18 @@ function getTimeLeft(room) {
 
 function broadcastState(room) {
 
+    if (!room)
+        return;
+
     broadcast(
         room,
         {
-            type: "state",
 
-            phase: room.phase,
+            type:
+                "state",
+
+            phase:
+                room.phase,
 
             timeLeft:
                 getTimeLeft(room),
@@ -394,7 +516,8 @@ function tryStartRound(room) {
         return;
 
     if (
-        room.phase !== "WAITING"
+        room.phase !==
+        "WAITING"
     ) {
         return;
     }
@@ -403,10 +526,13 @@ function tryStartRound(room) {
         room.players.size <
         MIN_PLAYERS_TO_START
     ) {
+
         broadcast(
             room,
             {
-                type: "waiting",
+
+                type:
+                    "waiting",
 
                 players:
                     room.players.size,
@@ -419,7 +545,8 @@ function tryStartRound(room) {
         return;
     }
 
-    room.phase = "COUNTDOWN";
+    room.phase =
+        "COUNTDOWN";
 
     room.countdown =
         ROUND_COUNTDOWN;
@@ -427,7 +554,9 @@ function tryStartRound(room) {
     broadcast(
         room,
         {
-            type: "countdown",
+
+            type:
+                "countdown",
 
             seconds:
                 room.countdown
@@ -435,6 +564,7 @@ function tryStartRound(room) {
     );
 
     if (room.countdownTimer) {
+
         clearInterval(
             room.countdownTimer
         );
@@ -468,6 +598,7 @@ function tryStartRound(room) {
                     broadcast(
                         room,
                         {
+
                             type:
                                 "countdown",
 
@@ -513,7 +644,8 @@ function startRound(room) {
         return;
     }
 
-    room.phase = "PLAYING";
+    room.phase =
+        "PLAYING";
 
     room.roundStartedAt =
         Date.now();
@@ -526,10 +658,6 @@ function startRound(room) {
         Array.from(
             room.players
         );
-
-    /*
-     * ESCOLHE O BEAR
-     */
 
     const bearIndex =
         Math.floor(
@@ -546,22 +674,36 @@ function startRound(room) {
         const player =
             playersArray[i];
 
-        player.dead = false;
+        player.dead =
+            false;
 
-        player.moveX = 0;
-        player.moveY = 0;
+        player.moveX =
+            0;
 
-        player.kills = 0;
+        player.moveY =
+            0;
 
-        player.lastAttack = 0;
+        player.lastInput =
+            Date.now();
 
-        if (i === bearIndex) {
+        player.kills =
+            0;
 
-            player.role = "BEAR";
+        player.lastAttack =
+            0;
 
-            player.hp = BEAR_HP;
+        if (
+            i === bearIndex
+        ) {
 
-            player.maxHp = BEAR_HP;
+            player.role =
+                "BEAR";
+
+            player.hp =
+                BEAR_HP;
+
+            player.maxHp =
+                BEAR_HP;
 
         } else {
 
@@ -580,14 +722,19 @@ function startRound(room) {
                 player.role
             );
 
-        player.x = spawn.x;
-        player.y = spawn.y;
+        player.x =
+            spawn.x;
+
+        player.y =
+            spawn.y;
     }
 
     broadcast(
         room,
         {
-            type: "round_start",
+
+            type:
+                "round_start",
 
             timeLeft:
                 ROUND_TIME,
@@ -611,10 +758,18 @@ function setMovement(
     if (!player)
         return;
 
-    /*
-     * Nunca aceitar NaN,
-     * Infinity ou valores estranhos.
-     */
+    if (
+        player.dead ||
+        !player.room ||
+        player.room.phase !==
+        "PLAYING"
+    ) {
+
+        player.moveX = 0;
+        player.moveY = 0;
+
+        return;
+    }
 
     if (
         !isFiniteNumber(x) ||
@@ -628,18 +783,22 @@ function setMovement(
     }
 
     /*
-     * Limita o input.
+     * Limita cada eixo.
      */
 
-    x = clamp(x, -1, 1);
-    y = clamp(y, -1, 1);
+    x =
+        clamp(
+            x,
+            -1,
+            1
+        );
 
-    /*
-     * NORMALIZA O VETOR.
-     *
-     * Isso evita que diagonal seja
-     * mais rápida.
-     */
+    y =
+        clamp(
+            y,
+            -1,
+            1
+        );
 
     const length =
         Math.sqrt(
@@ -647,22 +806,39 @@ function setMovement(
             y * y
         );
 
-    if (length < 0.05) {
+    if (
+        length < 0.05
+    ) {
 
         player.moveX = 0;
         player.moveY = 0;
 
+        player.lastInput =
+            Date.now();
+
         return;
     }
 
-    if (length > 1) {
+    /*
+     * Normalização diagonal.
+     */
+
+    if (
+        length > 1
+    ) {
 
         x /= length;
         y /= length;
     }
 
-    player.moveX = x;
-    player.moveY = y;
+    player.moveX =
+        x;
+
+    player.moveY =
+        y;
+
+    player.lastInput =
+        Date.now();
 }
 
 /* =========================
@@ -677,28 +853,37 @@ function updatePlayerMovement(
     if (!player)
         return;
 
-    if (player.dead)
+    if (
+        player.dead
+    )
         return;
 
     if (
         !player.room ||
         player.room.phase !==
         "PLAYING"
-    ) {
+    )
         return;
-    }
 
     /*
-     * SEGURANÇA EXTRA:
-     * nunca deixar um frame gigante
-     * teleportar o jogador.
+     * Se o cliente parou de enviar
+     * por muito tempo, para o jogador.
      */
+    if (
+        Date.now() -
+        player.lastInput >
+        350
+    ) {
+
+        player.moveX = 0;
+        player.moveY = 0;
+    }
 
     deltaSeconds =
         clamp(
             deltaSeconds,
             0,
-            0.1
+            0.05
         );
 
     let x =
@@ -714,6 +899,20 @@ function updatePlayerMovement(
 
         x = 0;
         y = 0;
+    }
+
+    const length =
+        Math.sqrt(
+            x * x +
+            y * y
+        );
+
+    if (
+        length > 1
+    ) {
+
+        x /= length;
+        y /= length;
     }
 
     const speed =
@@ -733,11 +932,8 @@ function updatePlayerMovement(
         speed *
         deltaSeconds;
 
-    /*
-     * LIMITES DO MAPA
-     */
-
-    const margin = 45;
+    const margin =
+        45;
 
     newX =
         clamp(
@@ -753,22 +949,21 @@ function updatePlayerMovement(
             MAP_HEIGHT - margin
         );
 
-    /*
-     * SEGURANÇA FINAL.
-     */
-
     if (
         isFiniteNumber(newX) &&
         isFiniteNumber(newY)
     ) {
 
-        player.x = newX;
-        player.y = newY;
+        player.x =
+            newX;
+
+        player.y =
+            newY;
     }
 }
 
 /* =========================
-   ATAQUE DO BEAR
+   ATAQUE
 ========================= */
 
 function bearAttack(player) {
@@ -777,12 +972,14 @@ function bearAttack(player) {
         return;
 
     if (
-        player.role !== "BEAR"
-    ) {
+        player.role !==
+        "BEAR"
+    )
         return;
-    }
 
-    if (player.dead)
+    if (
+        player.dead
+    )
         return;
 
     const room =
@@ -794,9 +991,8 @@ function bearAttack(player) {
     if (
         room.phase !==
         "PLAYING"
-    ) {
+    )
         return;
-    }
 
     const now =
         Date.now();
@@ -809,9 +1005,11 @@ function bearAttack(player) {
         return;
     }
 
-    player.lastAttack = now;
+    player.lastAttack =
+        now;
 
-    let hitPlayer = null;
+    let hitPlayer =
+        null;
 
     let closestDistance =
         Infinity;
@@ -823,18 +1021,18 @@ function bearAttack(player) {
         if (
             target.id ===
             player.id
-        ) {
+        )
             continue;
-        }
 
         if (
             target.role !==
             "SURVIVOR"
-        ) {
+        )
             continue;
-        }
 
-        if (target.dead)
+        if (
+            target.dead
+        )
             continue;
 
         const d =
@@ -846,27 +1044,35 @@ function bearAttack(player) {
             );
 
         if (
-            d <= ATTACK_RANGE &&
-            d < closestDistance
+            d <=
+            ATTACK_RANGE &&
+            d <
+            closestDistance
         ) {
 
-            closestDistance = d;
+            closestDistance =
+                d;
 
-            hitPlayer = target;
+            hitPlayer =
+                target;
         }
     }
 
     broadcast(
         room,
         {
-            type: "attack",
+
+            type:
+                "attack",
 
             playerId:
                 player.id,
 
-            x: player.x,
+            x:
+                player.x,
 
-            y: player.y,
+            y:
+                player.y,
 
             range:
                 ATTACK_RANGE,
@@ -888,18 +1094,24 @@ function bearAttack(player) {
         hitPlayer.hp <= 0
     ) {
 
-        hitPlayer.hp = 0;
+        hitPlayer.hp =
+            0;
 
-        hitPlayer.dead = true;
+        hitPlayer.dead =
+            true;
 
-        hitPlayer.moveX = 0;
-        hitPlayer.moveY = 0;
+        hitPlayer.moveX =
+            0;
+
+        hitPlayer.moveY =
+            0;
 
         player.kills++;
 
         broadcast(
             room,
             {
+
                 type:
                     "player_eliminated",
 
@@ -919,7 +1131,7 @@ function bearAttack(player) {
 }
 
 /* =========================
-   FINAL DA PARTIDA
+   FINAL
 ========================= */
 
 function checkRoundEnd(room) {
@@ -930,13 +1142,14 @@ function checkRoundEnd(room) {
     if (
         room.phase !==
         "PLAYING"
-    ) {
+    )
         return;
-    }
 
-    let bear = null;
+    let bear =
+        null;
 
-    let survivorsAlive = 0;
+    let survivorsAlive =
+        0;
 
     for (
         const player of room.players
@@ -947,7 +1160,8 @@ function checkRoundEnd(room) {
             "BEAR"
         ) {
 
-            bear = player;
+            bear =
+                player;
         }
 
         if (
@@ -959,10 +1173,6 @@ function checkRoundEnd(room) {
             survivorsAlive++;
         }
     }
-
-    /*
-     * BEAR morreu
-     */
 
     if (
         !bear ||
@@ -977,10 +1187,6 @@ function checkRoundEnd(room) {
 
         return;
     }
-
-    /*
-     * Todos os survivors morreram
-     */
 
     if (
         survivorsAlive <= 0
@@ -1008,26 +1214,32 @@ function endRound(
     if (
         room.phase !==
         "PLAYING"
-    ) {
+    )
         return;
-    }
 
-    room.phase = "ENDED";
+    room.phase =
+        "ENDED";
 
     for (
         const player of room.players
     ) {
 
-        player.moveX = 0;
-        player.moveY = 0;
+        player.moveX =
+            0;
+
+        player.moveY =
+            0;
     }
 
     broadcast(
         room,
         {
-            type: "round_end",
 
-            winner: winner,
+            type:
+                "round_end",
+
+            winner:
+                winner,
 
             players:
                 roomPlayers(room)
@@ -1037,7 +1249,11 @@ function endRound(
     setTimeout(
         () => {
 
-            if (!rooms.has(room.id))
+            if (
+                !rooms.has(
+                    room.id
+                )
+            )
                 return;
 
             resetRoom(room);
@@ -1056,61 +1272,17 @@ function resetRoom(room) {
     if (!room)
         return;
 
-    if (
-        room.players.size <
-        MIN_PLAYERS_TO_START
-    ) {
-
-        room.phase =
-            "WAITING";
-
-        room.countdown = 0;
-
-        room.roundStartedAt = 0;
-        room.roundEndsAt = 0;
-
-        for (
-            const player of room.players
-        ) {
-
-            player.role =
-                "SURVIVOR";
-
-            player.hp =
-                SURVIVOR_HP;
-
-            player.maxHp =
-                SURVIVOR_HP;
-
-            player.dead = false;
-
-            player.moveX = 0;
-            player.moveY = 0;
-        }
-
-        broadcast(
-            room,
-            {
-                type: "waiting",
-
-                players:
-                    room.players.size,
-
-                needed:
-                    MIN_PLAYERS_TO_START
-            }
-        );
-
-        return;
-    }
-
     room.phase =
         "WAITING";
 
-    room.countdown = 0;
+    room.countdown =
+        0;
 
-    room.roundStartedAt = 0;
-    room.roundEndsAt = 0;
+    room.roundStartedAt =
+        0;
+
+    room.roundEndsAt =
+        0;
 
     for (
         const player of room.players
@@ -1125,29 +1297,46 @@ function resetRoom(room) {
         player.maxHp =
             SURVIVOR_HP;
 
-        player.dead = false;
+        player.dead =
+            false;
 
-        player.moveX = 0;
-        player.moveY = 0;
+        player.moveX =
+            0;
+
+        player.moveY =
+            0;
+
+        player.lastInput =
+            Date.now();
 
         const spawn =
             getSpawnPosition(
                 "SURVIVOR"
             );
 
-        player.x = spawn.x;
-        player.y = spawn.y;
+        player.x =
+            spawn.x;
+
+        player.y =
+            spawn.y;
     }
 
     broadcast(
         room,
         {
-            type: "waiting",
+
+            type:
+                "waiting",
 
             players:
                 room.players.size,
 
-            needed: 0
+            needed:
+                Math.max(
+                    0,
+                    MIN_PLAYERS_TO_START -
+                    room.players.size
+                )
         }
     );
 
@@ -1168,9 +1357,12 @@ wss.on(
         const room =
             findAvailableRoom();
 
-        player.room = room;
+        player.room =
+            room;
 
-        room.players.add(player);
+        room.players.add(
+            player
+        );
 
         console.log(
             "Player entrou:",
@@ -1179,14 +1371,12 @@ wss.on(
             room.id
         );
 
-        /*
-         * Primeiro envia conexão.
-         */
-
         send(
             ws,
             {
-                type: "connected",
+
+                type:
+                    "connected",
 
                 playerId:
                     player.id,
@@ -1196,19 +1386,14 @@ wss.on(
             }
         );
 
-        /*
-         * Snapshot inicial.
-         */
-
-        sendSnapshot(player);
-
-        /*
-         * Avisa os outros.
-         */
+        sendSnapshot(
+            player
+        );
 
         broadcast(
             room,
             {
+
                 type:
                     "player_joined",
 
@@ -1217,11 +1402,9 @@ wss.on(
             }
         );
 
-        /*
-         * Tenta iniciar.
-         */
-
-        tryStartRound(room);
+        tryStartRound(
+            room
+        );
 
         ws.on(
             "message",
@@ -1238,7 +1421,9 @@ wss.on(
             "close",
             () => {
 
-                removePlayer(player);
+                removePlayer(
+                    player
+                );
             }
         );
 
@@ -1246,7 +1431,9 @@ wss.on(
             "error",
             () => {
 
-                removePlayer(player);
+                removePlayer(
+                    player
+                );
             }
         );
     }
@@ -1275,66 +1462,71 @@ function handleMessage(
         return;
     }
 
-    if (!data || !data.type)
-        return;
+    if (
+        !data ||
+        typeof data.type !==
+        "string"
+    ) {
 
-    /*
-     * MOVIMENTO
-     */
+        return;
+    }
+
+    /* MOVIMENTO */
 
     if (
         data.type ===
         "move"
     ) {
 
-        /*
-         * O CLIENTE SÓ ENVIA
-         * DIREÇÃO.
-         *
-         * Nunca posição.
-         */
+        const x =
+            Number(data.x);
+
+        const y =
+            Number(data.y);
 
         setMovement(
             player,
-            Number(data.x),
-            Number(data.y)
+            x,
+            y
         );
 
         return;
     }
 
-    /*
-     * PARAR
-     */
+    /* PARAR */
 
     if (
         data.type ===
         "stop"
     ) {
 
-        player.moveX = 0;
-        player.moveY = 0;
+        player.moveX =
+            0;
+
+        player.moveY =
+            0;
+
+        player.lastInput =
+            Date.now();
 
         return;
     }
 
-    /*
-     * ATAQUE
-     */
+    /* ATAQUE */
 
     if (
         data.type ===
         "attack"
     ) {
 
-        bearAttack(player);
+        bearAttack(
+            player
+        );
 
         return;
     }
 
-    /*
-     * NOME
-     */
+    /* NOME */
 
     if (
         data.type ===
@@ -1345,18 +1537,28 @@ function handleMessage(
             typeof data.name !==
             "string"
         ) {
+
             return;
         }
 
         let name =
             data.name
                 .trim()
-                .substring(0, 16);
+                .substring(
+                    0,
+                    16
+                );
 
-        if (name.length === 0)
-            name = "Guest";
+        if (
+            name.length === 0
+        ) {
 
-        player.name = name;
+            name =
+                "Guest";
+        }
+
+        player.name =
+            name;
 
         if (player.room) {
 
@@ -1368,9 +1570,7 @@ function handleMessage(
         return;
     }
 
-    /*
-     * PING
-     */
+    /* PING */
 
     if (
         data.type ===
@@ -1380,7 +1580,9 @@ function handleMessage(
         send(
             player.ws,
             {
-                type: "pong",
+
+                type:
+                    "pong",
 
                 time:
                     Date.now()
@@ -1400,15 +1602,12 @@ function removePlayer(player) {
     if (!player)
         return;
 
-    /*
-     * Evita executar duas vezes.
-     */
-
     if (
         !players.has(
             player.id
         )
     ) {
+
         return;
     }
 
@@ -1426,7 +1625,8 @@ function removePlayer(player) {
         player
     );
 
-    player.room = null;
+    player.room =
+        null;
 
     console.log(
         "Player saiu:",
@@ -1436,6 +1636,7 @@ function removePlayer(player) {
     broadcast(
         room,
         {
+
             type:
                 "player_left",
 
@@ -1443,11 +1644,6 @@ function removePlayer(player) {
                 player.id
         }
     );
-
-    /*
-     * Se o BEAR saiu durante a partida,
-     * survivors vencem.
-     */
 
     if (
         room.phase ===
@@ -1464,13 +1660,9 @@ function removePlayer(player) {
         return;
     }
 
-    /*
-     * Se não há jogadores,
-     * remove a sala.
-     */
-
     if (
-        room.players.size === 0
+        room.players.size ===
+        0
     ) {
 
         if (
@@ -1492,30 +1684,24 @@ function removePlayer(player) {
         return;
     }
 
-    /*
-     * Se estava esperando,
-     * atualiza.
-     */
-
     if (
         room.phase ===
         "WAITING"
     ) {
 
-        tryStartRound(room);
+        tryStartRound(
+            room
+        );
     }
-
-    /*
-     * Se estava jogando,
-     * verifica vitória.
-     */
 
     if (
         room.phase ===
         "PLAYING"
     ) {
 
-        checkRoundEnd(room);
+        checkRoundEnd(
+            room
+        );
     }
 }
 
@@ -1536,22 +1722,19 @@ setInterval(
             (now - lastTick) /
             1000;
 
-        lastTick = now;
-
-        /*
-         * Nunca deixar atraso do servidor
-         * virar teleport.
-         */
+        lastTick =
+            now;
 
         delta =
             clamp(
                 delta,
                 0,
-                0.1
+                0.05
             );
 
         for (
-            const player of players.values()
+            const player of
+            players.values()
         ) {
 
             updatePlayerMovement(
@@ -1561,7 +1744,8 @@ setInterval(
         }
 
         for (
-            const room of rooms.values()
+            const room of
+            rooms.values()
         ) {
 
             if (
@@ -1582,7 +1766,9 @@ setInterval(
                     continue;
                 }
 
-                checkRoundEnd(room);
+                checkRoundEnd(
+                    room
+                );
             }
         }
 
@@ -1591,14 +1777,15 @@ setInterval(
 );
 
 /* =========================
-   BROADCAST DE ESTADO
+   BROADCAST
 ========================= */
 
 setInterval(
     () => {
 
         for (
-            const room of rooms.values()
+            const room of
+            rooms.values()
         ) {
 
             if (
@@ -1606,12 +1793,14 @@ setInterval(
                 "PLAYING"
             ) {
 
-                broadcastState(room);
+                broadcastState(
+                    room
+                );
             }
         }
 
     },
-    100
+    SNAPSHOT_MS
 );
 
 /* =========================
@@ -1622,13 +1811,15 @@ setInterval(
     () => {
 
         for (
-            const player of players.values()
+            const player of
+            players.values()
         ) {
 
             if (
                 player.ws.readyState !==
                 WebSocket.OPEN
             ) {
+
                 continue;
             }
 
@@ -1638,7 +1829,9 @@ setInterval(
 
             } catch (e) {
 
-                removePlayer(player);
+                removePlayer(
+                    player
+                );
             }
         }
 
@@ -1647,7 +1840,7 @@ setInterval(
 );
 
 /* =========================
-   START SERVER
+   SERVER
 ========================= */
 
 server.listen(
@@ -1669,7 +1862,7 @@ server.listen(
         );
 
         console.log(
-            "Map:",
+            "Mapa:",
             MAP_WIDTH +
             "x" +
             MAP_HEIGHT
@@ -1711,6 +1904,10 @@ process.on(
     }
 );
 
+/* =========================
+   SHUTDOWN
+========================= */
+
 process.on(
     "SIGTERM",
     () => {
@@ -1720,7 +1917,8 @@ process.on(
         );
 
         for (
-            const player of players.values()
+            const player of
+            players.values()
         ) {
 
             send(
@@ -1732,13 +1930,18 @@ process.on(
             );
 
             try {
+
                 player.ws.close();
+
             } catch (e) {}
         }
 
         server.close(
             () => {
-                process.exit(0);
+
+                process.exit(
+                    0
+                );
             }
         );
     }
