@@ -1,142 +1,98 @@
 const http = require("http");
 const WebSocket = require("ws");
 
-const PORT = Number(process.env.PORT) || 10000;
+const PORT = process.env.PORT || 10000;
 
-const TICK_RATE = 20;
-const TICK_MS = 1000 / TICK_RATE;
-
-const MAX_PLAYERS_PER_ROOM = 8;
-const MIN_PLAYERS_TO_START = 2;
-
-const MAP_WIDTH = 2000;
-const MAP_HEIGHT = 1200;
-
-const PLAYER_RADIUS = 22;
-
-const SURVIVOR_MAX_HP = 100;
-const BEAR_MAX_HP = 500;
-
-const SURVIVOR_SPEED = 220;
-const BEAR_SPEED = 190;
-
-const BEAR_ATTACK_RANGE = 75;
-const BEAR_ATTACK_DAMAGE = 100;
-const BEAR_ATTACK_COOLDOWN = 650;
-
-const ROUND_TIME = 180000;
-const COUNTDOWN_TIME = 5000;
-const END_SCREEN_TIME = 5000;
-
-const rooms = new Map();
-
-let nextPlayerNumber = 1;
-let nextRoomNumber = 1;
-
-
-/* =========================================================
-   HTTP
-   ========================================================= */
-
-const httpServer = http.createServer((req, res) => {
-    if (req.url === "/") {
+const server = http.createServer((req, res) => {
+    if (req.url === "/" || req.url === "/health") {
         res.writeHead(200, {
-            "Content-Type": "text/plain; charset=utf-8"
-        });
-
-        res.end("BEAR Alpha 2D Server Online");
-        return;
-    }
-
-    if (req.url === "/health") {
-        const roomList = [];
-
-        for (const room of rooms.values()) {
-            roomList.push({
-                id: room.id,
-                players: room.players.size,
-                phase: room.phase
-            });
-        }
-
-        res.writeHead(200, {
-            "Content-Type": "application/json; charset=utf-8"
+            "Content-Type": "application/json"
         });
 
         res.end(JSON.stringify({
-            online: true,
-            players: countPlayers(),
-            rooms: rooms.size,
-            uptime: process.uptime(),
-            roomList: roomList
+            ok: true,
+            server: "BEAR Alpha 2D",
+            players: players.size,
+            rooms: rooms.size
         }));
 
         return;
     }
 
-    res.writeHead(404, {
-        "Content-Type": "text/plain; charset=utf-8"
-    });
-
+    res.writeHead(404);
     res.end("Not Found");
 });
 
-
-/* =========================================================
-   WEBSOCKET
-   ========================================================= */
-
 const wss = new WebSocket.Server({
-    server: httpServer,
-    maxPayload: 32768
+    server
 });
 
+/* =========================
+   CONFIGURAÇÃO
+========================= */
 
-/* =========================================================
-   UTILS
-   ========================================================= */
+const MAP_WIDTH = 2000;
+const MAP_HEIGHT = 1200;
 
-function countPlayers() {
-    let total = 0;
+const MAX_PLAYERS_PER_ROOM = 8;
+const MIN_PLAYERS_TO_START = 2;
 
-    for (const room of rooms.values()) {
-        total += room.players.size;
-    }
+const SURVIVOR_HP = 100;
+const BEAR_HP = 500;
 
-    return total;
-}
+const SURVIVOR_SPEED = 220;
+const BEAR_SPEED = 190;
 
-function generatePlayerId() {
-    const id = "player_" + nextPlayerNumber;
-    nextPlayerNumber++;
-    return id;
-}
+const ATTACK_RANGE = 85;
+const ATTACK_DAMAGE = 100;
+const ATTACK_COOLDOWN = 650;
 
-function generateRoomId() {
-    const id = "room_" + nextRoomNumber;
-    nextRoomNumber++;
-    return id;
+const ROUND_COUNTDOWN = 5;
+const ROUND_TIME = 180;
+
+const TICK_RATE = 20;
+const TICK_MS = 1000 / TICK_RATE;
+
+/* =========================
+   DADOS
+========================= */
+
+const players = new Map();
+const rooms = new Map();
+
+let nextPlayerNumber = 1;
+let nextRoomNumber = 1;
+
+/* =========================
+   UTILIDADES
+========================= */
+
+function randomId() {
+    return (
+        Date.now().toString(36) +
+        Math.random().toString(36).substring(2, 8)
+    );
 }
 
 function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
 }
 
+function isFiniteNumber(value) {
+    return (
+        typeof value === "number" &&
+        Number.isFinite(value)
+    );
+}
+
 function distance(x1, y1, x2, y2) {
     const dx = x2 - x1;
     const dy = y2 - y1;
 
-    return Math.sqrt(dx * dx + dy * dy);
-}
-
-function safeNumber(value, fallback = 0) {
-    const number = Number(value);
-
-    if (!Number.isFinite(number)) {
-        return fallback;
-    }
-
-    return number;
+    return Math.sqrt(
+        dx * dx +
+        dy * dy
+    );
 }
 
 function send(ws, data) {
@@ -146,123 +102,59 @@ function send(ws, data) {
     ) {
         try {
             ws.send(JSON.stringify(data));
-        } catch (error) {
-            console.log("Erro enviando mensagem:", error.message);
+        } catch (e) {
+            console.log("Erro ao enviar:", e.message);
         }
     }
 }
 
 function broadcast(room, data) {
-    const message = JSON.stringify(data);
+    if (!room)
+        return;
 
-    for (const player of room.players.values()) {
-        if (
-            player.ws.readyState === WebSocket.OPEN
-        ) {
-            try {
-                player.ws.send(message);
-            } catch (error) {
-                console.log(
-                    "Erro enviando broadcast:",
-                    error.message
-                );
-            }
-        }
+    for (const player of room.players) {
+        send(player.ws, data);
     }
 }
 
-
-/* =========================================================
-   PLAYER
-   ========================================================= */
-
-function createPlayer(ws) {
-    return {
-        id: generatePlayerId(),
-
-        ws: ws,
-
-        name: "Player",
-
-        role: "SURVIVOR",
-
-        x: 0,
-        y: 0,
-
-        hp: SURVIVOR_MAX_HP,
-        maxHp: SURVIVOR_MAX_HP,
-
-        alive: true,
-
-        kills: 0,
-        deaths: 0,
-
-        inputX: 0,
-        inputY: 0,
-
-        lastAttack: 0,
-
-        connectedAt: Date.now()
-    };
-}
-
-function getPlayerData(player) {
-    return {
-        id: player.id,
-
-        name: player.name,
-
-        role: player.role,
-
-        x: Math.round(player.x * 10) / 10,
-        y: Math.round(player.y * 10) / 10,
-
-        hp: player.hp,
-        maxHp: player.maxHp,
-
-        alive: player.alive,
-
-        kills: player.kills,
-        deaths: player.deaths
-    };
-}
-
-
-/* =========================================================
-   ROOM
-   ========================================================= */
+/* =========================
+   SALA
+========================= */
 
 function createRoom() {
-    const room = {
-        id: generateRoomId(),
 
-        players: new Map(),
+    const room = {
+        id: "room_" + nextRoomNumber++,
+
+        players: new Set(),
 
         phase: "WAITING",
 
-        countdownEnd: 0,
+        countdown: 0,
 
-        roundEnd: 0,
+        roundStartedAt: 0,
 
-        endScreenEnd: 0,
+        roundEndsAt: 0,
 
-        winner: null,
-
-        roundNumber: 0
+        countdownTimer: null
     };
 
-    rooms.set(room.id, room);
-
-    console.log("Sala criada:", room.id);
+    rooms.set(
+        room.id,
+        room
+    );
 
     return room;
 }
 
 function findAvailableRoom() {
+
     for (const room of rooms.values()) {
+
         if (
             room.phase === "WAITING" &&
-            room.players.size < MAX_PLAYERS_PER_ROOM
+            room.players.size <
+            MAX_PLAYERS_PER_ROOM
         ) {
             return room;
         }
@@ -271,113 +163,236 @@ function findAvailableRoom() {
     return createRoom();
 }
 
-function removeEmptyRooms() {
-    for (const [roomId, room] of rooms.entries()) {
-        if (room.players.size === 0) {
-            rooms.delete(roomId);
-
-            console.log(
-                "Sala removida:",
-                roomId
-            );
-        }
-    }
-}
-
-
-/* =========================================================
+/* =========================
    SPAWN
-   ========================================================= */
+========================= */
 
-function getSpawnPosition(room, role) {
+function getSpawnPosition(role) {
+
     if (role === "BEAR") {
+
         return {
-            x: 1000,
-            y: 600
+            x: MAP_WIDTH / 2,
+            y: MAP_HEIGHT / 2
         };
     }
 
-    const index =
-        Array.from(room.players.values())
-            .filter(player =>
-                player.role === "SURVIVOR"
-            ).length;
+    const margin = 150;
 
-    const survivorSpawns = [
-        { x: 250, y: 250 },
-        { x: 1750, y: 250 },
-        { x: 250, y: 950 },
-        { x: 1750, y: 950 },
-        { x: 1000, y: 180 },
-        { x: 1000, y: 1020 },
-        { x: 500, y: 600 }
+    const positions = [
+        {
+            x: margin,
+            y: margin
+        },
+        {
+            x: MAP_WIDTH - margin,
+            y: margin
+        },
+        {
+            x: margin,
+            y: MAP_HEIGHT - margin
+        },
+        {
+            x: MAP_WIDTH - margin,
+            y: MAP_HEIGHT - margin
+        },
+        {
+            x: MAP_WIDTH / 2,
+            y: margin
+        },
+        {
+            x: MAP_WIDTH / 2,
+            y: MAP_HEIGHT - margin
+        }
     ];
 
-    return survivorSpawns[
-        index % survivorSpawns.length
-    ];
-}
-
-
-/* =========================================================
-   ROLE SYSTEM
-   ========================================================= */
-
-function assignRoles(room) {
-    const players =
-        Array.from(room.players.values());
-
-    if (players.length === 0) {
-        return;
-    }
-
-    for (const player of players) {
-        player.role = "SURVIVOR";
-        player.maxHp = SURVIVOR_MAX_HP;
-        player.hp = SURVIVOR_MAX_HP;
-    }
-
-    const bearIndex =
+    return positions[
         Math.floor(
-            Math.random() * players.length
+            Math.random() *
+            positions.length
+        )
+    ];
+}
+
+/* =========================
+   PLAYER
+========================= */
+
+function createPlayer(ws) {
+
+    const id = randomId();
+
+    const player = {
+
+        id: id,
+
+        ws: ws,
+
+        number: nextPlayerNumber++,
+
+        name:
+            "Guest" +
+            nextPlayerNumber,
+
+        role: "SURVIVOR",
+
+        x: 1000,
+
+        y: 600,
+
+        hp: SURVIVOR_HP,
+
+        maxHp: SURVIVOR_HP,
+
+        dead: false,
+
+        kills: 0,
+
+        moveX: 0,
+
+        moveY: 0,
+
+        lastAttack: 0,
+
+        room: null
+    };
+
+    players.set(
+        id,
+        player
+    );
+
+    return player;
+}
+
+/* =========================
+   PLAYER DATA
+========================= */
+
+function publicPlayer(player) {
+
+    return {
+        id: player.id,
+
+        name: player.name,
+
+        role: player.role,
+
+        x: player.x,
+
+        y: player.y,
+
+        hp: player.hp,
+
+        maxHp: player.maxHp,
+
+        dead: player.dead,
+
+        kills: player.kills
+    };
+}
+
+function roomPlayers(room) {
+
+    const result = [];
+
+    for (const player of room.players) {
+        result.push(
+            publicPlayer(player)
         );
-
-    const bear =
-        players[bearIndex];
-
-    bear.role = "BEAR";
-    bear.maxHp = BEAR_MAX_HP;
-    bear.hp = BEAR_MAX_HP;
-}
-
-function resetPlayersForRound(room) {
-    for (const player of room.players.values()) {
-        player.alive = true;
-
-        player.hp = player.maxHp;
-
-        player.inputX = 0;
-        player.inputY = 0;
-
-        player.lastAttack = 0;
-
-        const spawn =
-            getSpawnPosition(
-                room,
-                player.role
-            );
-
-        player.x = spawn.x;
-        player.y = spawn.y;
     }
+
+    return result;
 }
 
+/* =========================
+   SNAPSHOT
+========================= */
 
-/* =========================================================
-   ROUND SYSTEM
-   ========================================================= */
+function sendSnapshot(player) {
 
-function startCountdown(room) {
+    const room = player.room;
+
+    if (!room)
+        return;
+
+    send(
+        player.ws,
+        {
+            type: "snapshot",
+
+            playerId: player.id,
+
+            roomId: room.id,
+
+            phase: room.phase,
+
+            countdown: room.countdown,
+
+            timeLeft:
+                getTimeLeft(room),
+
+            players:
+                roomPlayers(room)
+        }
+    );
+}
+
+/* =========================
+   TEMPO
+========================= */
+
+function getTimeLeft(room) {
+
+    if (
+        room.phase !== "PLAYING"
+    ) {
+        return 0;
+    }
+
+    const remaining =
+        room.roundEndsAt -
+        Date.now();
+
+    return Math.max(
+        0,
+        Math.ceil(
+            remaining / 1000
+        )
+    );
+}
+
+/* =========================
+   ESTADO
+========================= */
+
+function broadcastState(room) {
+
+    broadcast(
+        room,
+        {
+            type: "state",
+
+            phase: room.phase,
+
+            timeLeft:
+                getTimeLeft(room),
+
+            players:
+                roomPlayers(room)
+        }
+    );
+}
+
+/* =========================
+   COMEÇAR ROUND
+========================= */
+
+function tryStartRound(room) {
+
+    if (!room)
+        return;
+
     if (
         room.phase !== "WAITING"
     ) {
@@ -388,206 +403,573 @@ function startCountdown(room) {
         room.players.size <
         MIN_PLAYERS_TO_START
     ) {
+        broadcast(
+            room,
+            {
+                type: "waiting",
+
+                players:
+                    room.players.size,
+
+                needed:
+                    MIN_PLAYERS_TO_START
+            }
+        );
+
         return;
     }
 
     room.phase = "COUNTDOWN";
 
-    room.countdownEnd =
-        Date.now() + COUNTDOWN_TIME;
+    room.countdown =
+        ROUND_COUNTDOWN;
 
-    room.winner = null;
+    broadcast(
+        room,
+        {
+            type: "countdown",
 
-    broadcast(room, {
-        type: "countdown",
-
-        duration: COUNTDOWN_TIME,
-
-        players: getRoomPlayers(room)
-    });
-
-    console.log(
-        room.id,
-        "começou countdown"
+            seconds:
+                room.countdown
+        }
     );
+
+    if (room.countdownTimer) {
+        clearInterval(
+            room.countdownTimer
+        );
+    }
+
+    room.countdownTimer =
+        setInterval(
+            () => {
+
+                if (
+                    room.phase !==
+                    "COUNTDOWN"
+                ) {
+
+                    clearInterval(
+                        room.countdownTimer
+                    );
+
+                    room.countdownTimer =
+                        null;
+
+                    return;
+                }
+
+                room.countdown--;
+
+                if (
+                    room.countdown > 0
+                ) {
+
+                    broadcast(
+                        room,
+                        {
+                            type:
+                                "countdown",
+
+                            seconds:
+                                room.countdown
+                        }
+                    );
+
+                } else {
+
+                    clearInterval(
+                        room.countdownTimer
+                    );
+
+                    room.countdownTimer =
+                        null;
+
+                    startRound(room);
+                }
+
+            },
+            1000
+        );
 }
 
+/* =========================
+   ROUND START
+========================= */
+
 function startRound(room) {
+
+    if (!room)
+        return;
+
     if (
         room.players.size <
         MIN_PLAYERS_TO_START
     ) {
-        room.phase = "WAITING";
+
+        room.phase =
+            "WAITING";
+
         return;
     }
-
-    room.roundNumber++;
 
     room.phase = "PLAYING";
 
-    room.winner = null;
+    room.roundStartedAt =
+        Date.now();
 
-    assignRoles(room);
+    room.roundEndsAt =
+        Date.now() +
+        ROUND_TIME * 1000;
 
-    resetPlayersForRound(room);
-
-    room.roundEnd =
-        Date.now() + ROUND_TIME;
-
-    broadcast(room, {
-        type: "round_start",
-
-        round: room.roundNumber,
-
-        duration: ROUND_TIME,
-
-        players: getRoomPlayers(room)
-    });
-
-    console.log(
-        room.id,
-        "rodada iniciada:",
-        room.roundNumber
-    );
-}
-
-function endRound(room, winner) {
-    if (
-        room.phase !== "PLAYING"
-    ) {
-        return;
-    }
-
-    room.phase = "ENDED";
-
-    room.winner = winner;
-
-    room.endScreenEnd =
-        Date.now() + END_SCREEN_TIME;
-
-    broadcast(room, {
-        type: "round_end",
-
-        winner: winner,
-
-        players: getRoomPlayers(room)
-    });
-
-    console.log(
-        room.id,
-        "rodada terminou. Vencedor:",
-        winner
-    );
-}
-
-function updateRound(room) {
-    const now = Date.now();
-
-    if (
-        room.phase === "WAITING"
-    ) {
-        if (
-            room.players.size >=
-            MIN_PLAYERS_TO_START
-        ) {
-            startCountdown(room);
-        }
-
-        return;
-    }
-
-    if (
-        room.phase === "COUNTDOWN"
-    ) {
-        if (
-            room.players.size <
-            MIN_PLAYERS_TO_START
-        ) {
-            room.phase = "WAITING";
-
-            broadcast(room, {
-                type: "waiting"
-            });
-
-            return;
-        }
-
-        if (
-            now >= room.countdownEnd
-        ) {
-            startRound(room);
-        }
-
-        return;
-    }
-
-    if (
-        room.phase === "PLAYING"
-    ) {
-        if (
-            now >= room.roundEnd
-        ) {
-            endRound(
-                room,
-                "SURVIVORS"
-            );
-
-            return;
-        }
-
-        checkWinCondition(room);
-
-        return;
-    }
-
-    if (
-        room.phase === "ENDED"
-    ) {
-        if (
-            now >= room.endScreenEnd
-        ) {
-            if (
-                room.players.size >=
-                MIN_PLAYERS_TO_START
-            ) {
-                room.phase = "WAITING";
-
-                room.winner = null;
-
-                broadcast(room, {
-                    type: "waiting"
-                });
-
-                startCountdown(room);
-            } else {
-                room.phase = "WAITING";
-
-                room.winner = null;
-
-                broadcast(room, {
-                    type: "waiting"
-                });
-            }
-        }
-    }
-}
-
-
-/* =========================================================
-   WIN CONDITION
-   ========================================================= */
-
-function checkWinCondition(room) {
-    const players =
-        Array.from(room.players.values());
-
-    const bear =
-        players.find(
-            player =>
-                player.role === "BEAR"
+    const playersArray =
+        Array.from(
+            room.players
         );
 
-    if (!bear || !bear.alive) {
+    /*
+     * ESCOLHE O BEAR
+     */
+
+    const bearIndex =
+        Math.floor(
+            Math.random() *
+            playersArray.length
+        );
+
+    for (
+        let i = 0;
+        i < playersArray.length;
+        i++
+    ) {
+
+        const player =
+            playersArray[i];
+
+        player.dead = false;
+
+        player.moveX = 0;
+        player.moveY = 0;
+
+        player.kills = 0;
+
+        player.lastAttack = 0;
+
+        if (i === bearIndex) {
+
+            player.role = "BEAR";
+
+            player.hp = BEAR_HP;
+
+            player.maxHp = BEAR_HP;
+
+        } else {
+
+            player.role =
+                "SURVIVOR";
+
+            player.hp =
+                SURVIVOR_HP;
+
+            player.maxHp =
+                SURVIVOR_HP;
+        }
+
+        const spawn =
+            getSpawnPosition(
+                player.role
+            );
+
+        player.x = spawn.x;
+        player.y = spawn.y;
+    }
+
+    broadcast(
+        room,
+        {
+            type: "round_start",
+
+            timeLeft:
+                ROUND_TIME,
+
+            players:
+                roomPlayers(room)
+        }
+    );
+}
+
+/* =========================
+   MOVIMENTO
+========================= */
+
+function setMovement(
+    player,
+    x,
+    y
+) {
+
+    if (!player)
+        return;
+
+    /*
+     * Nunca aceitar NaN,
+     * Infinity ou valores estranhos.
+     */
+
+    if (
+        !isFiniteNumber(x) ||
+        !isFiniteNumber(y)
+    ) {
+
+        player.moveX = 0;
+        player.moveY = 0;
+
+        return;
+    }
+
+    /*
+     * Limita o input.
+     */
+
+    x = clamp(x, -1, 1);
+    y = clamp(y, -1, 1);
+
+    /*
+     * NORMALIZA O VETOR.
+     *
+     * Isso evita que diagonal seja
+     * mais rápida.
+     */
+
+    const length =
+        Math.sqrt(
+            x * x +
+            y * y
+        );
+
+    if (length < 0.05) {
+
+        player.moveX = 0;
+        player.moveY = 0;
+
+        return;
+    }
+
+    if (length > 1) {
+
+        x /= length;
+        y /= length;
+    }
+
+    player.moveX = x;
+    player.moveY = y;
+}
+
+/* =========================
+   ATUALIZAR MOVIMENTO
+========================= */
+
+function updatePlayerMovement(
+    player,
+    deltaSeconds
+) {
+
+    if (!player)
+        return;
+
+    if (player.dead)
+        return;
+
+    if (
+        !player.room ||
+        player.room.phase !==
+        "PLAYING"
+    ) {
+        return;
+    }
+
+    /*
+     * SEGURANÇA EXTRA:
+     * nunca deixar um frame gigante
+     * teleportar o jogador.
+     */
+
+    deltaSeconds =
+        clamp(
+            deltaSeconds,
+            0,
+            0.1
+        );
+
+    let x =
+        player.moveX;
+
+    let y =
+        player.moveY;
+
+    if (
+        !isFiniteNumber(x) ||
+        !isFiniteNumber(y)
+    ) {
+
+        x = 0;
+        y = 0;
+    }
+
+    const speed =
+        player.role === "BEAR"
+            ? BEAR_SPEED
+            : SURVIVOR_SPEED;
+
+    let newX =
+        player.x +
+        x *
+        speed *
+        deltaSeconds;
+
+    let newY =
+        player.y +
+        y *
+        speed *
+        deltaSeconds;
+
+    /*
+     * LIMITES DO MAPA
+     */
+
+    const margin = 45;
+
+    newX =
+        clamp(
+            newX,
+            margin,
+            MAP_WIDTH - margin
+        );
+
+    newY =
+        clamp(
+            newY,
+            margin,
+            MAP_HEIGHT - margin
+        );
+
+    /*
+     * SEGURANÇA FINAL.
+     */
+
+    if (
+        isFiniteNumber(newX) &&
+        isFiniteNumber(newY)
+    ) {
+
+        player.x = newX;
+        player.y = newY;
+    }
+}
+
+/* =========================
+   ATAQUE DO BEAR
+========================= */
+
+function bearAttack(player) {
+
+    if (!player)
+        return;
+
+    if (
+        player.role !== "BEAR"
+    ) {
+        return;
+    }
+
+    if (player.dead)
+        return;
+
+    const room =
+        player.room;
+
+    if (!room)
+        return;
+
+    if (
+        room.phase !==
+        "PLAYING"
+    ) {
+        return;
+    }
+
+    const now =
+        Date.now();
+
+    if (
+        now -
+        player.lastAttack <
+        ATTACK_COOLDOWN
+    ) {
+        return;
+    }
+
+    player.lastAttack = now;
+
+    let hitPlayer = null;
+
+    let closestDistance =
+        Infinity;
+
+    for (
+        const target of room.players
+    ) {
+
+        if (
+            target.id ===
+            player.id
+        ) {
+            continue;
+        }
+
+        if (
+            target.role !==
+            "SURVIVOR"
+        ) {
+            continue;
+        }
+
+        if (target.dead)
+            continue;
+
+        const d =
+            distance(
+                player.x,
+                player.y,
+                target.x,
+                target.y
+            );
+
+        if (
+            d <= ATTACK_RANGE &&
+            d < closestDistance
+        ) {
+
+            closestDistance = d;
+
+            hitPlayer = target;
+        }
+    }
+
+    broadcast(
+        room,
+        {
+            type: "attack",
+
+            playerId:
+                player.id,
+
+            x: player.x,
+
+            y: player.y,
+
+            range:
+                ATTACK_RANGE,
+
+            hit:
+                hitPlayer
+                    ? hitPlayer.id
+                    : null
+        }
+    );
+
+    if (!hitPlayer)
+        return;
+
+    hitPlayer.hp -=
+        ATTACK_DAMAGE;
+
+    if (
+        hitPlayer.hp <= 0
+    ) {
+
+        hitPlayer.hp = 0;
+
+        hitPlayer.dead = true;
+
+        hitPlayer.moveX = 0;
+        hitPlayer.moveY = 0;
+
+        player.kills++;
+
+        broadcast(
+            room,
+            {
+                type:
+                    "player_eliminated",
+
+                playerId:
+                    hitPlayer.id,
+
+                killerId:
+                    player.id,
+
+                players:
+                    roomPlayers(room)
+            }
+        );
+
+        checkRoundEnd(room);
+    }
+}
+
+/* =========================
+   FINAL DA PARTIDA
+========================= */
+
+function checkRoundEnd(room) {
+
+    if (!room)
+        return;
+
+    if (
+        room.phase !==
+        "PLAYING"
+    ) {
+        return;
+    }
+
+    let bear = null;
+
+    let survivorsAlive = 0;
+
+    for (
+        const player of room.players
+    ) {
+
+        if (
+            player.role ===
+            "BEAR"
+        ) {
+
+            bear = player;
+        }
+
+        if (
+            player.role ===
+            "SURVIVOR" &&
+            !player.dead
+        ) {
+
+            survivorsAlive++;
+        }
+    }
+
+    /*
+     * BEAR morreu
+     */
+
+    if (
+        !bear ||
+        bear.dead ||
+        bear.hp <= 0
+    ) {
+
         endRound(
             room,
             "SURVIVORS"
@@ -596,22 +978,14 @@ function checkWinCondition(room) {
         return;
     }
 
-    const survivors =
-        players.filter(
-            player =>
-                player.role === "SURVIVOR"
-        );
-
-    const aliveSurvivors =
-        survivors.filter(
-            player =>
-                player.alive
-        );
+    /*
+     * Todos os survivors morreram
+     */
 
     if (
-        survivors.length > 0 &&
-        aliveSurvivors.length === 0
+        survivorsAlive <= 0
     ) {
+
         endRound(
             room,
             "BEAR"
@@ -619,594 +993,499 @@ function checkWinCondition(room) {
     }
 }
 
+/* =========================
+   END ROUND
+========================= */
 
-/* =========================================================
-   MOVEMENT
-   ========================================================= */
-
-function updateMovement(room) {
-    for (const player of room.players.values()) {
-        if (!player.alive) {
-            continue;
-        }
-
-        if (
-            room.phase !== "PLAYING"
-        ) {
-            continue;
-        }
-
-        let inputX = player.inputX;
-        let inputY = player.inputY;
-
-        const length =
-            Math.sqrt(
-                inputX * inputX +
-                inputY * inputY
-            );
-
-        if (length > 1) {
-            inputX /= length;
-            inputY /= length;
-        }
-
-        const speed =
-            player.role === "BEAR"
-                ? BEAR_SPEED
-                : SURVIVOR_SPEED;
-
-        const dt =
-            TICK_MS / 1000;
-
-        player.x +=
-            inputX * speed * dt;
-
-        player.y +=
-            inputY * speed * dt;
-
-        player.x =
-            clamp(
-                player.x,
-                PLAYER_RADIUS,
-                MAP_WIDTH - PLAYER_RADIUS
-            );
-
-        player.y =
-            clamp(
-                player.y,
-                PLAYER_RADIUS,
-                MAP_HEIGHT - PLAYER_RADIUS
-            );
-    }
-}
-
-
-/* =========================================================
-   ATTACK
-   ========================================================= */
-
-function bearAttack(room, bear) {
-    if (
-        room.phase !== "PLAYING"
-    ) {
-        return;
-    }
-
-    if (
-        !bear.alive ||
-        bear.role !== "BEAR"
-    ) {
-        return;
-    }
-
-    const now = Date.now();
-
-    if (
-        now - bear.lastAttack <
-        BEAR_ATTACK_COOLDOWN
-    ) {
-        return;
-    }
-
-    bear.lastAttack = now;
-
-    let target = null;
-
-    let nearestDistance =
-        BEAR_ATTACK_RANGE + 1;
-
-    for (const player of room.players.values()) {
-        if (
-            player.id === bear.id
-        ) {
-            continue;
-        }
-
-        if (
-            player.role !== "SURVIVOR"
-        ) {
-            continue;
-        }
-
-        if (!player.alive) {
-            continue;
-        }
-
-        const d =
-            distance(
-                bear.x,
-                bear.y,
-                player.x,
-                player.y
-            );
-
-        if (
-            d <= BEAR_ATTACK_RANGE &&
-            d < nearestDistance
-        ) {
-            nearestDistance = d;
-            target = player;
-        }
-    }
-
-    if (!target) {
-        broadcast(room, {
-            type: "attack",
-            attackerId: bear.id,
-            hit: false
-        });
-
-        return;
-    }
-
-    target.hp =
-        Math.max(
-            0,
-            target.hp -
-            BEAR_ATTACK_DAMAGE
-        );
-
-    broadcast(room, {
-        type: "attack",
-
-        attackerId: bear.id,
-
-        targetId: target.id,
-
-        hit: true,
-
-        damage: BEAR_ATTACK_DAMAGE,
-
-        targetHp: target.hp
-    });
-
-    if (
-        target.hp <= 0
-    ) {
-        eliminatePlayer(
-            room,
-            target,
-            bear
-        );
-    }
-}
-
-
-/* =========================================================
-   ELIMINATION
-   ========================================================= */
-
-function eliminatePlayer(
+function endRound(
     room,
-    victim,
-    killer
+    winner
 ) {
-    if (!victim.alive) {
+
+    if (!room)
         return;
-    }
 
-    victim.alive = false;
-
-    victim.hp = 0;
-
-    victim.deaths++;
-
-    if (killer) {
-        killer.kills++;
-    }
-
-    victim.inputX = 0;
-    victim.inputY = 0;
-
-    broadcast(room, {
-        type: "player_eliminated",
-
-        victimId: victim.id,
-
-        killerId:
-            killer
-                ? killer.id
-                : null
-    });
-
-    checkWinCondition(room);
-}
-
-
-/* =========================================================
-   ROOM PLAYERS
-   ========================================================= */
-
-function getRoomPlayers(room) {
-    const list = [];
-
-    for (const player of room.players.values()) {
-        list.push(
-            getPlayerData(player)
-        );
-    }
-
-    return list;
-}
-
-function sendSnapshot(room, player) {
-    send(player.ws, {
-        type: "snapshot",
-
-        roomId: room.id,
-
-        phase: room.phase,
-
-        round: room.roundNumber,
-
-        winner: room.winner,
-
-        map: {
-            width: MAP_WIDTH,
-            height: MAP_HEIGHT
-        },
-
-        playerId: player.id,
-
-        players: getRoomPlayers(room)
-    });
-}
-
-
-/* =========================================================
-   STATE BROADCAST
-   ========================================================= */
-
-function broadcastState(room) {
     if (
-        room.players.size === 0
+        room.phase !==
+        "PLAYING"
     ) {
         return;
     }
 
-    const now = Date.now();
+    room.phase = "ENDED";
 
-    let timeLeft = 0;
-
-    if (
-        room.phase === "PLAYING"
+    for (
+        const player of room.players
     ) {
-        timeLeft =
-            Math.max(
-                0,
-                room.roundEnd - now
-            );
+
+        player.moveX = 0;
+        player.moveY = 0;
     }
-
-    if (
-        room.phase === "COUNTDOWN"
-    ) {
-        timeLeft =
-            Math.max(
-                0,
-                room.countdownEnd - now
-            );
-    }
-
-    broadcast(room, {
-        type: "state",
-
-        phase: room.phase,
-
-        round: room.roundNumber,
-
-        timeLeft: timeLeft,
-
-        winner: room.winner,
-
-        players: getRoomPlayers(room)
-    });
-}
-
-
-/* =========================================================
-   MESSAGE HANDLING
-   ========================================================= */
-
-function handleMessage(player, data) {
-    if (
-        !data ||
-        typeof data !== "object"
-    ) {
-        return;
-    }
-
-    const type = data.type;
-
-    if (type === "ping") {
-        send(player.ws, {
-            type: "pong",
-            time: Date.now()
-        });
-
-        return;
-    }
-
-
-    if (type === "set_name") {
-        let name =
-            String(
-                data.name || "Player"
-            );
-
-        name =
-            name
-                .replace(
-                    /[^a-zA-Z0-9À-ÿ _-]/g,
-                    ""
-                )
-                .trim();
-
-        if (name.length === 0) {
-            name = "Player";
-        }
-
-        name =
-            name.substring(0, 16);
-
-        player.name = name;
-
-        if (player.room) {
-            broadcast(
-                player.room,
-                {
-                    type: "player_update",
-                    player:
-                        getPlayerData(player)
-                }
-            );
-        }
-
-        return;
-    }
-
-
-    if (type === "move") {
-        let x =
-            safeNumber(
-                data.x,
-                0
-            );
-
-        let y =
-            safeNumber(
-                data.y,
-                0
-            );
-
-        const length =
-            Math.sqrt(
-                x * x +
-                y * y
-            );
-
-        if (length > 1) {
-            x /= length;
-            y /= length;
-        }
-
-        player.inputX =
-            clamp(
-                x,
-                -1,
-                1
-            );
-
-        player.inputY =
-            clamp(
-                y,
-                -1,
-                1
-            );
-
-        return;
-    }
-
-
-    if (type === "stop") {
-        player.inputX = 0;
-        player.inputY = 0;
-
-        return;
-    }
-
-
-    if (type === "attack") {
-        if (player.room) {
-            bearAttack(
-                player.room,
-                player
-            );
-        }
-
-        return;
-    }
-}
-
-
-/* =========================================================
-   CONNECTION
-   ========================================================= */
-
-wss.on("connection", (ws) => {
-    const player =
-        createPlayer(ws);
-
-    const room =
-        findAvailableRoom();
-
-    player.room = room;
-
-    room.players.set(
-        player.id,
-        player
-    );
-
-    ws.isAlive = true;
-
-    console.log(
-        player.id,
-        "entrou na sala",
-        room.id
-    );
-
-
-    send(ws, {
-        type: "connected",
-
-        playerId: player.id,
-
-        roomId: room.id,
-
-        map: {
-            width: MAP_WIDTH,
-            height: MAP_HEIGHT
-        },
-
-        maxPlayers:
-            MAX_PLAYERS_PER_ROOM
-    });
-
-
-    sendSnapshot(
-        room,
-        player
-    );
-
 
     broadcast(
         room,
         {
-            type: "player_joined",
+            type: "round_end",
 
-            player:
-                getPlayerData(player)
+            winner: winner,
+
+            players:
+                roomPlayers(room)
         }
     );
 
+    setTimeout(
+        () => {
 
-    ws.on("pong", () => {
-        ws.isAlive = true;
-    });
-
-
-    ws.on("message", (rawMessage) => {
-        try {
-            const text =
-                rawMessage.toString();
-
-            if (
-                text.length >
-                16000
-            ) {
+            if (!rooms.has(room.id))
                 return;
-            }
 
-            const data =
-                JSON.parse(text);
+            resetRoom(room);
 
-            handleMessage(
-                player,
-                data
-            );
+        },
+        5000
+    );
+}
 
-        } catch (error) {
-            send(ws, {
-                type: "error",
-                message:
-                    "Mensagem inválida."
-            });
+/* =========================
+   RESET
+========================= */
+
+function resetRoom(room) {
+
+    if (!room)
+        return;
+
+    if (
+        room.players.size <
+        MIN_PLAYERS_TO_START
+    ) {
+
+        room.phase =
+            "WAITING";
+
+        room.countdown = 0;
+
+        room.roundStartedAt = 0;
+        room.roundEndsAt = 0;
+
+        for (
+            const player of room.players
+        ) {
+
+            player.role =
+                "SURVIVOR";
+
+            player.hp =
+                SURVIVOR_HP;
+
+            player.maxHp =
+                SURVIVOR_HP;
+
+            player.dead = false;
+
+            player.moveX = 0;
+            player.moveY = 0;
         }
-    });
 
+        broadcast(
+            room,
+            {
+                type: "waiting",
 
-    ws.on("close", () => {
-        disconnectPlayer(player);
-    });
+                players:
+                    room.players.size,
 
-
-    ws.on("error", (error) => {
-        console.log(
-            player.id,
-            "socket error:",
-            error.message
+                needed:
+                    MIN_PLAYERS_TO_START
+            }
         );
-    });
-});
 
-
-/* =========================================================
-   DISCONNECT
-   ========================================================= */
-
-function disconnectPlayer(player) {
-    const room =
-        player.room;
-
-    if (!room) {
         return;
     }
 
+    room.phase =
+        "WAITING";
+
+    room.countdown = 0;
+
+    room.roundStartedAt = 0;
+    room.roundEndsAt = 0;
+
+    for (
+        const player of room.players
+    ) {
+
+        player.role =
+            "SURVIVOR";
+
+        player.hp =
+            SURVIVOR_HP;
+
+        player.maxHp =
+            SURVIVOR_HP;
+
+        player.dead = false;
+
+        player.moveX = 0;
+        player.moveY = 0;
+
+        const spawn =
+            getSpawnPosition(
+                "SURVIVOR"
+            );
+
+        player.x = spawn.x;
+        player.y = spawn.y;
+    }
+
+    broadcast(
+        room,
+        {
+            type: "waiting",
+
+            players:
+                room.players.size,
+
+            needed: 0
+        }
+    );
+
+    tryStartRound(room);
+}
+
+/* =========================
+   WEBSOCKET
+========================= */
+
+wss.on(
+    "connection",
+    (ws) => {
+
+        const player =
+            createPlayer(ws);
+
+        const room =
+            findAvailableRoom();
+
+        player.room = room;
+
+        room.players.add(player);
+
+        console.log(
+            "Player entrou:",
+            player.id,
+            "Room:",
+            room.id
+        );
+
+        /*
+         * Primeiro envia conexão.
+         */
+
+        send(
+            ws,
+            {
+                type: "connected",
+
+                playerId:
+                    player.id,
+
+                roomId:
+                    room.id
+            }
+        );
+
+        /*
+         * Snapshot inicial.
+         */
+
+        sendSnapshot(player);
+
+        /*
+         * Avisa os outros.
+         */
+
+        broadcast(
+            room,
+            {
+                type:
+                    "player_joined",
+
+                player:
+                    publicPlayer(player)
+            }
+        );
+
+        /*
+         * Tenta iniciar.
+         */
+
+        tryStartRound(room);
+
+        ws.on(
+            "message",
+            (raw) => {
+
+                handleMessage(
+                    player,
+                    raw
+                );
+            }
+        );
+
+        ws.on(
+            "close",
+            () => {
+
+                removePlayer(player);
+            }
+        );
+
+        ws.on(
+            "error",
+            () => {
+
+                removePlayer(player);
+            }
+        );
+    }
+);
+
+/* =========================
+   MENSAGENS
+========================= */
+
+function handleMessage(
+    player,
+    raw
+) {
+
+    let data;
+
+    try {
+
+        data =
+            JSON.parse(
+                raw.toString()
+            );
+
+    } catch (e) {
+
+        return;
+    }
+
+    if (!data || !data.type)
+        return;
+
+    /*
+     * MOVIMENTO
+     */
+
     if (
-        !room.players.has(
+        data.type ===
+        "move"
+    ) {
+
+        /*
+         * O CLIENTE SÓ ENVIA
+         * DIREÇÃO.
+         *
+         * Nunca posição.
+         */
+
+        setMovement(
+            player,
+            Number(data.x),
+            Number(data.y)
+        );
+
+        return;
+    }
+
+    /*
+     * PARAR
+     */
+
+    if (
+        data.type ===
+        "stop"
+    ) {
+
+        player.moveX = 0;
+        player.moveY = 0;
+
+        return;
+    }
+
+    /*
+     * ATAQUE
+     */
+
+    if (
+        data.type ===
+        "attack"
+    ) {
+
+        bearAttack(player);
+
+        return;
+    }
+
+    /*
+     * NOME
+     */
+
+    if (
+        data.type ===
+        "set_name"
+    ) {
+
+        if (
+            typeof data.name !==
+            "string"
+        ) {
+            return;
+        }
+
+        let name =
+            data.name
+                .trim()
+                .substring(0, 16);
+
+        if (name.length === 0)
+            name = "Guest";
+
+        player.name = name;
+
+        if (player.room) {
+
+            broadcastState(
+                player.room
+            );
+        }
+
+        return;
+    }
+
+    /*
+     * PING
+     */
+
+    if (
+        data.type ===
+        "ping"
+    ) {
+
+        send(
+            player.ws,
+            {
+                type: "pong",
+
+                time:
+                    Date.now()
+            }
+        );
+
+        return;
+    }
+}
+
+/* =========================
+   REMOVER PLAYER
+========================= */
+
+function removePlayer(player) {
+
+    if (!player)
+        return;
+
+    /*
+     * Evita executar duas vezes.
+     */
+
+    if (
+        !players.has(
             player.id
         )
     ) {
         return;
     }
 
-    room.players.delete(
+    players.delete(
         player.id
     );
 
+    const room =
+        player.room;
+
+    if (!room)
+        return;
+
+    room.players.delete(
+        player
+    );
+
+    player.room = null;
+
     console.log(
-        player.id,
-        "saiu da sala",
-        room.id
+        "Player saiu:",
+        player.id
     );
 
     broadcast(
         room,
         {
-            type: "player_left",
+            type:
+                "player_left",
 
             playerId:
                 player.id
         }
     );
 
+    /*
+     * Se o BEAR saiu durante a partida,
+     * survivors vencem.
+     */
+
+    if (
+        room.phase ===
+        "PLAYING" &&
+        player.role ===
+        "BEAR"
+    ) {
+
+        endRound(
+            room,
+            "SURVIVORS"
+        );
+
+        return;
+    }
+
+    /*
+     * Se não há jogadores,
+     * remove a sala.
+     */
+
     if (
         room.players.size === 0
     ) {
-        rooms.delete(room.id);
 
-        console.log(
-            "Sala destruída:",
+        if (
+            room.countdownTimer
+        ) {
+
+            clearInterval(
+                room.countdownTimer
+            );
+
+            room.countdownTimer =
+                null;
+        }
+
+        rooms.delete(
             room.id
         );
 
@@ -1214,147 +1493,253 @@ function disconnectPlayer(player) {
     }
 
     /*
-     * Se o BEAR sair durante a partida,
-     * os sobreviventes vencem.
+     * Se estava esperando,
+     * atualiza.
      */
 
     if (
-        room.phase === "PLAYING" &&
-        player.role === "BEAR"
+        room.phase ===
+        "WAITING"
     ) {
-        endRound(
-            room,
-            "SURVIVORS"
-        );
+
+        tryStartRound(room);
+    }
+
+    /*
+     * Se estava jogando,
+     * verifica vitória.
+     */
+
+    if (
+        room.phase ===
+        "PLAYING"
+    ) {
+
+        checkRoundEnd(room);
     }
 }
 
-
-/* =========================================================
+/* =========================
    GAME LOOP
-   ========================================================= */
+========================= */
 
-setInterval(() => {
-    for (const room of rooms.values()) {
-        updateRound(room);
+let lastTick =
+    Date.now();
 
-        updateMovement(room);
+setInterval(
+    () => {
 
-        broadcastState(room);
-    }
+        const now =
+            Date.now();
 
-    removeEmptyRooms();
+        let delta =
+            (now - lastTick) /
+            1000;
 
-}, TICK_MS);
+        lastTick = now;
 
+        /*
+         * Nunca deixar atraso do servidor
+         * virar teleport.
+         */
 
-/* =========================================================
+        delta =
+            clamp(
+                delta,
+                0,
+                0.1
+            );
+
+        for (
+            const player of players.values()
+        ) {
+
+            updatePlayerMovement(
+                player,
+                delta
+            );
+        }
+
+        for (
+            const room of rooms.values()
+        ) {
+
+            if (
+                room.phase ===
+                "PLAYING"
+            ) {
+
+                if (
+                    Date.now() >=
+                    room.roundEndsAt
+                ) {
+
+                    endRound(
+                        room,
+                        "SURVIVORS"
+                    );
+
+                    continue;
+                }
+
+                checkRoundEnd(room);
+            }
+        }
+
+    },
+    TICK_MS
+);
+
+/* =========================
+   BROADCAST DE ESTADO
+========================= */
+
+setInterval(
+    () => {
+
+        for (
+            const room of rooms.values()
+        ) {
+
+            if (
+                room.phase ===
+                "PLAYING"
+            ) {
+
+                broadcastState(room);
+            }
+        }
+
+    },
+    100
+);
+
+/* =========================
    HEARTBEAT
-   ========================================================= */
+========================= */
 
-setInterval(() => {
-    for (const ws of wss.clients) {
-        if (ws.isAlive === false) {
-            try {
-                ws.terminate();
-            } catch (error) {
+setInterval(
+    () => {
+
+        for (
+            const player of players.values()
+        ) {
+
+            if (
+                player.ws.readyState !==
+                WebSocket.OPEN
+            ) {
+                continue;
             }
 
-            continue;
+            try {
+
+                player.ws.ping();
+
+            } catch (e) {
+
+                removePlayer(player);
+            }
         }
 
-        ws.isAlive = false;
+    },
+    15000
+);
 
-        try {
-            ws.ping();
-        } catch (error) {
-        }
-    }
-}, 30000);
+/* =========================
+   START SERVER
+========================= */
 
-
-/* =========================================================
-   SERVER START
-   ========================================================= */
-
-httpServer.listen(
+server.listen(
     PORT,
     "0.0.0.0",
     () => {
+
         console.log(
-            "================================="
+            "================================"
         );
 
         console.log(
-            "BEAR Alpha 2D Server"
+            "BEAR Alpha 2D SERVER"
         );
 
         console.log(
-            "Porta:",
+            "Port:",
             PORT
         );
 
         console.log(
-            "Tick:",
-            TICK_RATE,
-            "Hz"
-        );
-
-        console.log(
-            "Mapa:",
-            MAP_WIDTH,
-            "x",
+            "Map:",
+            MAP_WIDTH +
+            "x" +
             MAP_HEIGHT
         );
 
         console.log(
-            "Max jogadores por sala:",
-            MAX_PLAYERS_PER_ROOM
+            "WebSocket ativo"
         );
 
         console.log(
-            "================================="
+            "================================"
         );
     }
 );
 
+/* =========================
+   ERROS
+========================= */
 
-/* =========================================================
-   GRACEFUL SHUTDOWN
-   ========================================================= */
+process.on(
+    "uncaughtException",
+    (error) => {
 
-function shutdown() {
-    console.log(
-        "Desligando servidor..."
-    );
+        console.error(
+            "Erro não tratado:",
+            error
+        );
+    }
+);
 
-    for (const room of rooms.values()) {
-        for (const player of room.players.values()) {
+process.on(
+    "unhandledRejection",
+    (error) => {
+
+        console.error(
+            "Promise rejeitada:",
+            error
+        );
+    }
+);
+
+process.on(
+    "SIGTERM",
+    () => {
+
+        console.log(
+            "Servidor encerrando..."
+        );
+
+        for (
+            const player of players.values()
+        ) {
+
             send(
                 player.ws,
                 {
-                    type: "server_shutdown"
+                    type:
+                        "server_shutdown"
                 }
             );
 
             try {
                 player.ws.close();
-            } catch (error) {
-            }
+            } catch (e) {}
         }
+
+        server.close(
+            () => {
+                process.exit(0);
+            }
+        );
     }
-
-    httpServer.close(() => {
-        process.exit(0);
-    });
-}
-
-process.on(
-    "SIGTERM",
-    shutdown
-);
-
-process.on(
-    "SIGINT",
-    shutdown
 );
